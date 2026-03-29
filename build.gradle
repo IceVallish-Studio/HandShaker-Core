@@ -1,0 +1,63 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = project.maven_group
+version = project.core_version
+
+base {
+    archivesName = project.artifact_id
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(project.java_version as int)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "com.zaxxer:HikariCP:${project.HikariCP}"
+    implementation "org.slf4j:slf4j-api:${project.slf4japi}"
+    implementation "com.google.code.gson:gson:${project.gson}"
+    compileOnly "org.yaml:snakeyaml:${project.snakeyaml}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = project.java_version as int
+    options.encoding = 'UTF-8'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            groupId = project.maven_group
+            artifactId = project.artifact_id
+            version = project.core_version
+
+            pom {
+                name = 'HandShaker Core'
+                description = 'Core cross-loader handshake and verification engine for HandShaker.'
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            def repoPath = System.getenv('GITHUB_REPOSITORY') ?: findProperty('githubRepository') ?: 'IceVallish-Studio/HandShaker-Core'
+            name = 'GitHubPackages'
+            url = uri("https://maven.pkg.github.com/${repoPath}")
+            credentials {
+                username = System.getenv('GITHUB_ACTOR') ?: findProperty('gpr.user')
+                password = System.getenv('GITHUB_TOKEN') ?: findProperty('gpr.key')
+            }
+        }
+    }
+}
