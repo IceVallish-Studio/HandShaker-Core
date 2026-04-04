@@ -95,7 +95,7 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getUpsertPlayerSql() {
         return """
             MERGE INTO player_names (uuid, current_name, first_seen, last_seen) KEY(uuid)
-            VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?)
             """;
     }
 
@@ -103,7 +103,7 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getInsertModSql() {
         return """
             INSERT INTO mod_history (player_uuid, mod_name, added_date, removed_date)
-            VALUES (?, ?, CURRENT_TIMESTAMP, NULL)
+            VALUES (?, ?, ?, NULL)
             """;
     }
 
@@ -111,7 +111,7 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getRegisterModFingerprintSql() {
         return """
             MERGE INTO mod_registry (mod_id, mod_version, mod_hash, updated_at) KEY(mod_id, mod_version)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?)
             """;
     }
 
@@ -182,9 +182,14 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
                                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                                 )""");
 
-                        migStmt.execute("""
+                        try (PreparedStatement copyStmt = migConn.prepareStatement("""
                                 INSERT INTO player_names (uuid, current_name, first_seen, last_seen)
-                                SELECT uuid, name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM player_names_old""");
+                                SELECT uuid, name, ?, ? FROM player_names_old""")) {
+                            java.sql.Timestamp migratedAt = currentUtcTimestamp();
+                            setUtcTimestamp(copyStmt, 1, migratedAt);
+                            setUtcTimestamp(copyStmt, 2, migratedAt);
+                            copyStmt.executeUpdate();
+                        }
 
                         migStmt.execute("DROP TABLE player_names_old");
 

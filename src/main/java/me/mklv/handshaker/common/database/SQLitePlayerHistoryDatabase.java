@@ -93,10 +93,10 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getUpsertPlayerSql() {
         return """
             INSERT INTO player_names (uuid, current_name, first_seen, last_seen)
-            VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(uuid) DO UPDATE SET
                 current_name = excluded.current_name,
-                last_seen = CURRENT_TIMESTAMP
+                last_seen = excluded.last_seen
             """;
     }
 
@@ -104,7 +104,7 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getInsertModSql() {
         return """
             INSERT INTO mod_history (player_uuid, mod_name, added_date, removed_date)
-            VALUES (?, ?, CURRENT_TIMESTAMP, NULL)
+            VALUES (?, ?, ?, NULL)
             ON CONFLICT(player_uuid, mod_name, added_date) DO NOTHING
             """;
     }
@@ -113,10 +113,10 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
     protected String getRegisterModFingerprintSql() {
         return """
             INSERT INTO mod_registry (mod_id, mod_version, mod_hash, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?)
             ON CONFLICT(mod_id, mod_version) DO UPDATE SET
               mod_hash = COALESCE(excluded.mod_hash, mod_registry.mod_hash),
-              updated_at = CURRENT_TIMESTAMP
+                            updated_at = excluded.updated_at
             """;
     }
 }

@@ -9,9 +9,15 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.UUID;
 
 public abstract class PlayerHistoryDatabase {
@@ -29,12 +36,14 @@ public abstract class PlayerHistoryDatabase {
     protected final Logger logger;
     private final boolean enabled;
     private final DatabaseOptions options;
+    private final ZoneId displayZoneId;
     private final CachedValue<Map<String, Integer>> modPopularityCache = new CachedValue<>(CACHE_TTL_MS);
 
     protected PlayerHistoryDatabase(Logger logger, boolean enabled, DatabaseOptions options) {
         this.logger = logger;
         this.enabled = enabled;
         this.options = options != null ? options : DatabaseOptions.defaults();
+        this.displayZoneId = ZoneId.systemDefault();
     }
 
     protected final void initialize() {
@@ -67,8 +76,11 @@ public abstract class PlayerHistoryDatabase {
             try {
                 String upsertPlayer = getUpsertPlayerSql();
                 try (PreparedStatement ps = conn.prepareStatement(upsertPlayer)) {
+                    Timestamp seenAt = currentUtcTimestamp();
                     ps.setString(1, uuid.toString());
                     ps.setString(2, playerName);
+                    setUtcTimestamp(ps, 3, seenAt);
+                    setUtcTimestamp(ps, 4, seenAt);
                     ps.executeUpdate();
                 }
 
@@ -92,9 +104,11 @@ public abstract class PlayerHistoryDatabase {
                 if (!newMods.isEmpty()) {
                     String insertMod = getInsertModSql();
                     try (PreparedStatement ps = conn.prepareStatement(insertMod)) {
+                        Timestamp addedAt = currentUtcTimestamp();
                         for (String mod : newMods) {
                             ps.setString(1, uuid.toString());
                             ps.setString(2, mod);
+                            setUtcTimestamp(ps, 3, addedAt);
                             ps.addBatch();
                         }
                         ps.executeBatch();
@@ -102,11 +116,13 @@ public abstract class PlayerHistoryDatabase {
                 }
 
                 if (!removedMods.isEmpty()) {
-                    String removeMod = "UPDATE mod_history SET removed_date = CURRENT_TIMESTAMP WHERE player_uuid = ? AND mod_name = ? AND removed_date IS NULL";
+                    String removeMod = "UPDATE mod_history SET removed_date = ? WHERE player_uuid = ? AND mod_name = ? AND removed_date IS NULL";
                     try (PreparedStatement ps = conn.prepareStatement(removeMod)) {
+                        Timestamp removedAt = currentUtcTimestamp();
                         for (String mod : removedMods) {
-                            ps.setString(1, uuid.toString());
-                            ps.setString(2, mod);
+                            setUtcTimestamp(ps, 1, removedAt);
+                            ps.setString(2, uuid.toString());
+                            ps.setString(3, mod);
                             ps.addBatch();
                         }
                         ps.executeBatch();
@@ -147,8 +163,8 @@ public abstract class PlayerHistoryDatabase {
             while (rs.next()) {
                 history.add(new ModHistoryEntry(
                     rs.getString("mod_name"),
-                    rs.getTimestamp("added_date").toLocalDateTime(),
-                    rs.getTimestamp("removed_date") != null ? rs.getTimestamp("removed_date").toLocalDateTime() : null
+                    readDisplayDateTime(rs, "added_date"),
+                    readDisplayDateTime(rs, "removed_date")
                 ));
             }
         } catch (SQLException e) {
@@ -218,7 +234,7 @@ public abstract class PlayerHistoryDatabase {
                 players.add(new PlayerModInfo(
                     UUID.fromString(rs.getString("player_uuid")),
                     rs.getString("current_name"),
-                    rs.getTimestamp("first_seen").toLocalDateTime(),
+                    readDisplayDateTime(rs, "first_seen"),
                     rs.getInt("is_active") == 1
                 ));
             }
@@ -349,6 +365,7 @@ public abstract class PlayerHistoryDatabase {
             stmt.setString(1, normalizedId);
             stmt.setString(2, normalizedVersion);
             stmt.setString(3, normalizedHash);
+            setUtcTimestamp(stmt, 4, currentUtcTimestamp());
             stmt.executeUpdate();
         } catch (SQLException e) {
             logWarn("Failed to register mod fingerprint: %s", e.getMessage());
@@ -428,12 +445,11 @@ public abstract class PlayerHistoryDatabase {
         if (!isEnabled() || days <= 0) {
             return -1;
         }
-        long cutoffMs = System.currentTimeMillis() - (long) days * 24L * 60L * 60L * 1000L;
-        java.sql.Timestamp cutoff = new java.sql.Timestamp(cutoffMs);
+        Timestamp cutoff = Timestamp.from(Instant.now().minus(days, ChronoUnit.DAYS));
         String sql = "DELETE FROM mod_history WHERE removed_date IS NOT NULL AND removed_date < ?";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setTimestamp(1, cutoff);
+            setUtcTimestamp(ps, 1, cutoff);
             int deleted = ps.executeUpdate();
             if (deleted > 0) {
                 modPopularityCache.invalidate();
@@ -489,6 +505,19 @@ public abstract class PlayerHistoryDatabase {
         return null;
     }
 
+    protected final Timestamp currentUtcTimestamp() {
+        return Timestamp.from(Instant.now());
+    }
+
+    protected final void setUtcTimestamp(PreparedStatement statement, int parameterIndex, Timestamp value) throws SQLException {
+        statement.setTimestamp(parameterIndex, value, utcCalendar());
+    }
+
+    protected final LocalDateTime readDisplayDateTime(ResultSet resultSet, String columnName) throws SQLException {
+        Timestamp timestamp = resultSet.getTimestamp(columnName, utcCalendar());
+        return timestamp != null ? LocalDateTime.ofInstant(timestamp.toInstant(), displayZoneId) : null;
+    }
+
     protected Set<String> getActiveModsForSync(Connection conn, UUID uuid) throws SQLException {
         Set<String> mods = new HashSet<>();
         String sql = "SELECT mod_name FROM mod_history WHERE player_uuid = ? AND removed_date IS NULL";
@@ -535,6 +564,10 @@ public abstract class PlayerHistoryDatabase {
             return;
         }
         logger.warn(String.format(format, arg));
+    }
+
+    private Calendar utcCalendar() {
+        return Calendar.getInstance(TimeZone.getTimeZone(ZoneOffset.UTC));
     }
 
     public record ModHistoryEntry(String modName, LocalDateTime addedDate, LocalDateTime removedDate) {
