@@ -21,10 +21,14 @@ import java.util.regex.Pattern;
 public class PayloadValidation {
     private static final Pattern SHA256_HEX = Pattern.compile("^[a-f0-9]{64}$");
     private static final long NONCE_TTL_MILLIS = 10 * 60 * 1000L;
+    private static final long CHALLENGE_TTL_MILLIS = 5 * 60 * 1000L;
     private final PayloadValidationCallbacks callbacks;
     private final SignatureVerifier signatureVerifier;
     private final Map<String, Long> usedNonces = new ConcurrentHashMap<>();
-    private final Map<UUID, String> pendingChallenges = new ConcurrentHashMap<>();
+    
+    private record Challenge(String value, long createdAt) {}
+    private final Map<UUID, Challenge> pendingChallenges = new ConcurrentHashMap<>();
+    
     private final Map<UUID, ClientInfo> clients;
     private final RateLimiter rateLimiter;
     private boolean debugMode = false;
@@ -43,17 +47,17 @@ public class PayloadValidation {
     }
 
     public String issueChallenge(UUID playerId) {
-        String challenge = UUID.randomUUID().toString();
-        pendingChallenges.put(playerId, challenge);
+        String value = UUID.randomUUID().toString();
+        pendingChallenges.put(playerId, new Challenge(value, System.currentTimeMillis()));
         if (debugMode) {
-            callbacks.logInfo("Issued challenge %s for player %s", challenge, playerId);
+            callbacks.logInfo("Issued challenge %s for player %s", value, playerId);
         }
-        return challenge;
+        return value;
     }
 
     private boolean validateChallenge(UUID playerId, String nonce, String payloadType) {
-        String expected = pendingChallenges.get(playerId);
-        if (expected == null) {
+        Challenge challenge = pendingChallenges.get(playerId);
+        if (challenge == null) {
             // If no challenge was issued (e.g. legacy client or server just started), 
             // we might allow it if compatibility is enabled, but for modern security 
             // we should ideally require it.
@@ -61,9 +65,16 @@ public class PayloadValidation {
             callbacks.logWarning("Received %s from %s but no challenge was issued. Rejecting.", payloadType, playerId);
             return false;
         }
-        if (!expected.equals(nonce)) {
+        
+        if (System.currentTimeMillis() - challenge.createdAt() > CHALLENGE_TTL_MILLIS) {
+            callbacks.logWarning("Received %s from %s but challenge has expired.", payloadType, playerId);
+            pendingChallenges.remove(playerId);
+            return false;
+        }
+
+        if (!challenge.value().equals(nonce)) {
             callbacks.logWarning("Received %s from %s with wrong challenge. Expected %s but got %s", 
-                payloadType, playerId, expected, nonce);
+                payloadType, playerId, challenge.value(), nonce);
             return false;
         }
         return true;
@@ -563,8 +574,8 @@ public class PayloadValidation {
     }
 
     private void cleanupExpiredChallenges() {
-        // Challenges don't have a timestamp yet, but we could add one if needed.
-        // For now, they are cleared on quit.
+        long now = System.currentTimeMillis();
+        pendingChallenges.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > CHALLENGE_TTL_MILLIS);
     }
 
     public void cleanupIdleRateLimiterBuckets() {
