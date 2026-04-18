@@ -8,6 +8,7 @@ import me.mklv.handshaker.common.utils.PayloadCompression;
 import me.mklv.handshaker.common.utils.RateLimiter;
 import me.mklv.handshaker.common.utils.SignatureVerifier;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -23,6 +24,7 @@ public class PayloadValidation {
     private final PayloadValidationCallbacks callbacks;
     private final SignatureVerifier signatureVerifier;
     private final Map<String, Long> usedNonces = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingChallenges = new ConcurrentHashMap<>();
     private final Map<UUID, ClientInfo> clients;
     private final RateLimiter rateLimiter;
     private boolean debugMode = false;
@@ -40,6 +42,33 @@ public class PayloadValidation {
         this.debugMode = debug;
     }
 
+    public String issueChallenge(UUID playerId) {
+        String challenge = UUID.randomUUID().toString();
+        pendingChallenges.put(playerId, challenge);
+        if (debugMode) {
+            callbacks.logInfo("Issued challenge %s for player %s", challenge, playerId);
+        }
+        return challenge;
+    }
+
+    private boolean validateChallenge(UUID playerId, String nonce, String payloadType) {
+        String expected = pendingChallenges.get(playerId);
+        if (expected == null) {
+            // If no challenge was issued (e.g. legacy client or server just started), 
+            // we might allow it if compatibility is enabled, but for modern security 
+            // we should ideally require it.
+            // For now, let's be strict if it's a modern payload.
+            callbacks.logWarning("Received %s from %s but no challenge was issued. Rejecting.", payloadType, playerId);
+            return false;
+        }
+        if (!expected.equals(nonce)) {
+            callbacks.logWarning("Received %s from %s with wrong challenge. Expected %s but got %s", 
+                payloadType, playerId, expected, nonce);
+            return false;
+        }
+        return true;
+    }
+
     /**
      * Validates a mod list payload and updates client info.
      * Checks: nonce validity, hash, replay attacks, mod list parsing.
@@ -51,6 +80,28 @@ public class PayloadValidation {
             return new ValidationResult(false, "Too many handshake payloads. Please retry shortly.");
         }
 
+        // 1. Validate challenge/nonce
+        if (nonce == null || nonce.isEmpty()) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_MISSING_NONCE,
+                StandardMessages.HANDSHAKE_MISSING_NONCE);
+            callbacks.logWarning("Received mod list from %s with invalid/missing nonce. Rejecting.", playerName);
+            return new ValidationResult(false, message);
+        }
+
+        if (!validateChallenge(playerId, nonce, "mod list")) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
+                StandardMessages.HANDSHAKE_REPLAY);
+            return new ValidationResult(false, message);
+        }
+
+        // 2. Check for replay attack
+        if (!markNonceUsed(playerId, nonce, "modlist")) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
+                StandardMessages.HANDSHAKE_REPLAY);
+            callbacks.logWarning("Received mod list from %s with replay nonce. Kicking.", playerName);
+            return new ValidationResult(false, message);
+        }
+
         String decodedPayload = modListPayload;
         if (callbacks.isPayloadCompressionEnabled()) {
             Optional<String> inflated = PayloadCompression.decodeEnvelope(modListPayload);
@@ -60,22 +111,6 @@ public class PayloadValidation {
                     StandardMessages.HANDSHAKE_CORRUPTED));
             }
             decodedPayload = inflated.get();
-        }
-
-        // 1. Validate nonce
-        if (nonce == null || nonce.isEmpty()) {
-            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_MISSING_NONCE,
-                StandardMessages.HANDSHAKE_MISSING_NONCE);
-            callbacks.logWarning("Received mod list from %s with invalid/missing nonce. Rejecting.", playerName);
-            return new ValidationResult(false, message);
-        }
-
-        // 2. Check for replay attack
-        if (!markNonceUsed(playerId, nonce)) {
-            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
-                StandardMessages.HANDSHAKE_REPLAY);
-            callbacks.logWarning("Received mod list from %s with replay nonce. Kicking.", playerName);
-            return new ValidationResult(false, message);
         }
 
         // 3. Validate mod list exists
@@ -184,13 +219,35 @@ public class PayloadValidation {
 
     /**
      * Validates an integrity payload and updates client info.
-     * Checks: nonce validity, signature, jar hash, signature verification.
+     * Checks: nonce validity, signature, jar hash, signature verification, and session binding.
      */
     public ValidationResult validateIntegrity(UUID playerId, String playerName, byte[] clientSignature, 
                                              String jarHash, String nonce) {
         if (callbacks.isRateLimitEnabled() && !rateLimiter.tryConsume(playerId)) {
             callbacks.logWarning("Rate limit exceeded for %s while sending integrity payload", playerName);
             return new ValidationResult(false, "Too many handshake payloads. Please retry shortly.");
+        }
+
+        // 1. Validate challenge/nonce
+        if (nonce == null || nonce.isEmpty()) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_MISSING_NONCE,
+                StandardMessages.HANDSHAKE_MISSING_NONCE);
+            callbacks.logWarning("Received integrity payload from %s with invalid/missing nonce. Rejecting.", playerName);
+            return new ValidationResult(false, message);
+        }
+
+        if (!validateChallenge(playerId, nonce, "integrity")) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
+                StandardMessages.HANDSHAKE_REPLAY);
+            return new ValidationResult(false, message);
+        }
+
+        // 2. Check for replay attack
+        if (!markNonceUsed(playerId, nonce, "integrity")) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
+                StandardMessages.HANDSHAKE_REPLAY);
+            callbacks.logWarning("Received integrity payload from %s with replay nonce. Kicking.", playerName);
+            return new ValidationResult(false, message);
         }
 
         ClientInfo previousInfo = clients.get(playerId);
@@ -203,22 +260,6 @@ public class PayloadValidation {
             String message = callbacks.getMessageOrDefault(StandardMessages.KEY_OUTDATED_CLIENT,
                 StandardMessages.DEFAULT_OUTDATED_CLIENT_MESSAGE);
             callbacks.logWarning("Received hybrid(v6) integrity payload from %s while hybrid compatibility is disabled.", playerName);
-            return new ValidationResult(false, message);
-        }
-
-        // 1. Validate nonce
-        if (nonce == null || nonce.isEmpty()) {
-            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_MISSING_NONCE,
-                StandardMessages.HANDSHAKE_MISSING_NONCE);
-            callbacks.logWarning("Received integrity payload from %s with invalid/missing nonce. Rejecting.", playerName);
-            return new ValidationResult(false, message);
-        }
-
-        // 2. Check for replay attack
-        if (!markNonceUsed(playerId, nonce)) {
-            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
-                StandardMessages.HANDSHAKE_REPLAY);
-            callbacks.logWarning("Received integrity payload from %s with replay nonce. Kicking.", playerName);
             return new ValidationResult(false, message);
         }
 
@@ -280,6 +321,30 @@ public class PayloadValidation {
             callbacks.logInfo("Integrity payload hash from %s: %s", playerName, jarHash);
         }
 
+        // 7. Verify session binding (Proof of Possession)
+        // The client proves it has the signature by sending sha256(signature + nonce).
+        // Signature field format: [32 bytes binding proof][rest is static signature]
+        byte[] staticSignature;
+        if (clientSignature.length > 256) { // Modern packet with binding proof
+            byte[] proof = new byte[32];
+            System.arraycopy(clientSignature, 0, proof, 0, 32);
+            staticSignature = new byte[clientSignature.length - 32];
+            System.arraycopy(clientSignature, 32, staticSignature, 0, staticSignature.length);
+            
+            byte[] expectedProof = HashUtils.sha256(combine(staticSignature, nonce.getBytes(StandardCharsets.UTF_8)));
+            if (!Arrays.equals(proof, expectedProof)) {
+                callbacks.logWarning("Integrity check for %s: session binding proof FAILED. Possible replay attack.", playerName);
+                return new ValidationResult(false, "Security violation: invalid integrity proof binding.");
+            }
+        } else {
+            // Replay protection for static signatures: require modern binding unless legacy mode is enabled.
+            if (!callbacks.isLegacyCompatibilityEnabled()) {
+                callbacks.logWarning("Integrity check for %s: received static signature without binding proof. Rejecting.", playerName);
+                return new ValidationResult(false, "Insecure connection: update your HandShaker mod.");
+            }
+            staticSignature = clientSignature;
+        }
+
         if (modListFormat == ModListFormat.HYBRID && callbacks.isHybridCompatibilityEnabled()) {
             if (!LegacyVersion.isTrustedHybridJarHash(jarHash)) {
                 String message = callbacks.getMessageOrDefault(StandardMessages.KEY_INVALID_SIGNATURE,
@@ -288,12 +353,12 @@ public class PayloadValidation {
                 return new ValidationResult(false, message);
             }
 
-            boolean verified = verifyHybridSignature(jarHash, clientSignature, playerName);
+            boolean verified = verifyHybridSignature(jarHash, staticSignature, playerName);
             return updateIntegrityResult(playerId, playerName, nonce, verified);
         }
 
-        // 7. Verify signature
-        boolean verified = verifySignature(jarHash, clientSignature, playerName);
+        // 8. Verify static signature
+        boolean verified = verifySignature(jarHash, staticSignature, playerName);
 
         if (debugMode) {
             callbacks.logInfo("Integrity check for %s: %s", playerName, verified ? "PASSED" : "FAILED");
@@ -301,8 +366,15 @@ public class PayloadValidation {
             callbacks.logInfo("%s - Integrity: %s", playerName, verified ? "PASSED" : "FAILED");
         }
 
-        // 8. Update client info
+        // 9. Update client info
         return updateIntegrityResult(playerId, playerName, nonce, verified);
+    }
+
+    private byte[] combine(byte[] a, byte[] b) {
+        byte[] res = new byte[a.length + b.length];
+        System.arraycopy(a, 0, res, 0, a.length);
+        System.arraycopy(b, 0, res, a.length, b.length);
+        return res;
     }
 
     private boolean verifyHybridSignature(String jarHash, byte[] signatureBytes, String playerName) {
@@ -366,7 +438,7 @@ public class PayloadValidation {
             return new ValidationResult(false, "Too many handshake payloads. Please retry shortly.");
         }
 
-        // 1. Validate nonce
+        // 1. Validate challenge/nonce
         if (nonce == null || nonce.isEmpty()) {
             String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_MISSING_NONCE,
                 StandardMessages.HANDSHAKE_MISSING_NONCE);
@@ -374,8 +446,14 @@ public class PayloadValidation {
             return new ValidationResult(false, message);
         }
 
+        if (!validateChallenge(playerId, nonce, "Velton")) {
+            String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
+                StandardMessages.HANDSHAKE_REPLAY);
+            return new ValidationResult(false, message);
+        }
+
         // 2. Check for replay attack
-        if (!markNonceUsed(playerId, nonce)) {
+        if (!markNonceUsed(playerId, nonce, "velton")) {
             String message = callbacks.getMessageOrDefault(StandardMessages.KEY_HANDSHAKE_REPLAY,
                 StandardMessages.HANDSHAKE_REPLAY);
             callbacks.logWarning("Received Velton payload from %s with replay nonce. Kicking.", playerName);
@@ -467,6 +545,7 @@ public class PayloadValidation {
 
     public void clearNonceHistory() {
         usedNonces.clear();
+        pendingChallenges.clear();
     }
 
     public void clearNonceHistory(UUID playerId) {
@@ -475,24 +554,31 @@ public class PayloadValidation {
         }
         String prefix = playerId + ":";
         usedNonces.keySet().removeIf(key -> key.startsWith(prefix));
+        pendingChallenges.remove(playerId);
     }
 
     public void cleanupExpiredNoncesNow() {
         cleanupExpiredNonces();
+        cleanupExpiredChallenges();
+    }
+
+    private void cleanupExpiredChallenges() {
+        // Challenges don't have a timestamp yet, but we could add one if needed.
+        // For now, they are cleared on quit.
     }
 
     public void cleanupIdleRateLimiterBuckets() {
         rateLimiter.cleanupIdle(30 * 60 * 1000L); // Remove buckets idle for 30 minutes
     }
 
-    private boolean markNonceUsed(UUID playerId, String nonce) {
+    private boolean markNonceUsed(UUID playerId, String nonce, String payloadType) {
         cleanupExpiredNonces();
-        String nonceKey = buildNonceKey(playerId, nonce);
+        String nonceKey = buildNonceKey(playerId, nonce, payloadType);
         return usedNonces.putIfAbsent(nonceKey, System.currentTimeMillis()) == null;
     }
 
-    private String buildNonceKey(UUID playerId, String nonce) {
-        return playerId + ":" + nonce;
+    private String buildNonceKey(UUID playerId, String nonce, String payloadType) {
+        return playerId + ":" + payloadType + ":" + nonce;
     }
 
     private void cleanupExpiredNonces() {
@@ -537,3 +623,4 @@ public class PayloadValidation {
         void checkPlayer(UUID playerId, String playerName, ClientInfo info);
     }
 }
+

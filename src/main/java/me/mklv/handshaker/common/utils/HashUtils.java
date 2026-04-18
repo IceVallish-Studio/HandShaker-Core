@@ -11,6 +11,18 @@ public final class HashUtils {
     private HashUtils() {
     }
 
+    public static byte[] sha256(byte[] input) {
+        if (input == null) {
+            return new byte[0];
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return digest.digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            return new byte[0];
+        }
+    }
+
     public static byte[] sha256Bytes(String input) {
         if (input == null) {
             return new byte[0];
