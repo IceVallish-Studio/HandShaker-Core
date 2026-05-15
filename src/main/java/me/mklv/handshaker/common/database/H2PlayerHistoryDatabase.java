@@ -45,7 +45,8 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
                     uuid TEXT PRIMARY KEY,
                     current_name TEXT NOT NULL,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    hardware_fingerprint TEXT
                 )
                 """);
 
@@ -94,8 +95,8 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
     @Override
     protected String getUpsertPlayerSql() {
         return """
-            MERGE INTO player_names (uuid, current_name, first_seen, last_seen) KEY(uuid)
-            VALUES (?, ?, ?, ?)
+            MERGE INTO player_names (uuid, current_name, first_seen, last_seen, hardware_fingerprint) KEY(uuid)
+            VALUES (?, ?, ?, ?, ?)
             """;
     }
 
@@ -145,6 +146,7 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
              ResultSet rs = stmt.executeQuery("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PLAYER_NAMES'")) {
             boolean hasOldNameColumn = false;
             boolean hasNewCurrentNameColumn = false;
+            boolean hasHardwareFingerprint = false;
 
             while (rs.next()) {
                 String columnName = rs.getString("COLUMN_NAME");
@@ -154,16 +156,9 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
                 if ("CURRENT_NAME".equals(columnName)) {
                     hasNewCurrentNameColumn = true;
                 }
-            }
-
-            if (!hasOldNameColumn && !hasNewCurrentNameColumn) {
-                logger.debug("Fresh database detected - schema is correct");
-                return;
-            }
-
-            if (hasNewCurrentNameColumn && !hasOldNameColumn) {
-                logger.debug("Database already has correct schema");
-                return;
+                if ("HARDWARE_FINGERPRINT".equalsIgnoreCase(columnName)) {
+                    hasHardwareFingerprint = true;
+                }
             }
 
             if (hasOldNameColumn && !hasNewCurrentNameColumn) {
@@ -179,12 +174,13 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
                                     uuid TEXT PRIMARY KEY,
                                     current_name TEXT NOT NULL,
                                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                    hardware_fingerprint TEXT
                                 )""");
 
                         try (PreparedStatement copyStmt = migConn.prepareStatement("""
-                                INSERT INTO player_names (uuid, current_name, first_seen, last_seen)
-                                SELECT uuid, name, ?, ? FROM player_names_old""")) {
+                                INSERT INTO player_names (uuid, current_name, first_seen, last_seen, hardware_fingerprint)
+                                SELECT uuid, name, ?, ?, NULL FROM player_names_old""")) {
                             java.sql.Timestamp migratedAt = currentUtcTimestamp();
                             setUtcTimestamp(copyStmt, 1, migratedAt);
                             setUtcTimestamp(copyStmt, 2, migratedAt);
@@ -195,12 +191,18 @@ public class H2PlayerHistoryDatabase extends PlayerHistoryDatabase {
 
                         migConn.commit();
                         logger.info("Database schema migration completed successfully");
+                        return; // Done migrating, including hardware_fingerprint
                     } catch (SQLException e) {
                         migConn.rollback();
                         logger.error("Failed to migrate database schema", e);
                         throw e;
                     }
                 }
+            }
+
+            if (!hasHardwareFingerprint && hasNewCurrentNameColumn) {
+                logger.info("Migrating H2 database: adding hardware_fingerprint column to player_names");
+                stmt.execute("ALTER TABLE player_names ADD COLUMN hardware_fingerprint TEXT");
             }
         }
     }

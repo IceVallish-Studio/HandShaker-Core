@@ -1,5 +1,7 @@
 package me.mklv.handshaker.common.loader;
 
+import me.mklv.handshaker.common.utils.HardwareFingerprint;
+
 public final class CommonClientHandshakeOrchestrator {
     public interface Logger {
         void info(String format, Object... args);
@@ -8,7 +10,7 @@ public final class CommonClientHandshakeOrchestrator {
     }
 
     public interface Sender {
-        void sendModList(String transportPayload, String modListHash, String nonce);
+        void sendModList(String transportPayload, String modListHash, String nonce, String hardwareFingerprint);
 
         void sendIntegrity(byte[] signature, String jarHash, String nonce);
     }
@@ -42,7 +44,7 @@ public final class CommonClientHandshakeOrchestrator {
     public void onChallenge(String challenge, Availability availability, PayloadProvider payloads, Sender sender, Logger logger) {
         logger.info("Received handshake challenge: {}. Checking connection readiness...", challenge);
         lastChallenge = challenge;
-        
+
         if (!availability.isConnectionReady()) {
             logger.warn("Received challenge but connection is not ready yet. Storing for later.");
             return;
@@ -52,27 +54,29 @@ public final class CommonClientHandshakeOrchestrator {
     }
 
     private void sendHandshake(String challenge, PayloadProvider payloads, Sender sender, Logger logger) {
+        String hwid = HardwareFingerprint.generate();
         CommonClientHashPayloadService.ModListData modList = payloads.getModListData();
-        sender.sendModList(modList.transportPayload(), modList.modListHash(), challenge);
+        sender.sendModList(modList.transportPayload(), modList.modListHash(), challenge, hwid);
         logger.info(
-            "Sent mod list ({} chars, hash: {}) with challenge: {}",
+            "Sent mod list ({} chars, hash: {}) with challenge: {} and hwid: {}",
             modList.transportPayload().length(),
             abbreviateHash(modList.modListHash()),
-            challenge
+            challenge,
+            hwid
         );
 
         CommonClientHashPayloadService.IntegrityData integrity = payloads.getIntegrityData();
-        
+
         // Cryptographic binding: prove possession of the static signature for THIS session challenge
         byte[] staticSignature = integrity.signature();
         if (staticSignature.length > 0) {
             byte[] bindingProof = me.mklv.handshaker.common.utils.HashUtils.sha256(
                 combine(staticSignature, challenge.getBytes(java.nio.charset.StandardCharsets.UTF_8))
             );
-            
+
             // Re-purpose the signature field: [32 bytes binding proof][rest is static signature]
             byte[] boundPayload = combine(bindingProof, staticSignature);
-            
+
             sender.sendIntegrity(boundPayload, integrity.jarHash(), challenge);
             logger.info(
                 "Sent detached integrity proof ({} bytes + binding) with content hash {} and challenge: {}",

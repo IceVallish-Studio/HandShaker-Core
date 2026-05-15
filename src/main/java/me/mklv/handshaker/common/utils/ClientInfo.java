@@ -10,7 +10,8 @@ public record ClientInfo(
 	String modListNonce,
 	String integrityNonce,
 	String veltonNonce,
-	boolean handshakeChecked
+	boolean handshakeChecked,
+	String hwid
 ) {
 
 	public ClientInfo(Set<String> mods,
@@ -19,12 +20,22 @@ public record ClientInfo(
 					  String modListNonce,
 					  String integrityNonce,
 					  String veltonNonce) {
-		this(false, mods, signatureVerified, veltonVerified, modListNonce, integrityNonce, veltonNonce, false);
+		this(false, mods, signatureVerified, veltonVerified, modListNonce, integrityNonce, veltonNonce, false, null);
+	}
+
+	public ClientInfo(Set<String> mods,
+					  boolean signatureVerified,
+					  boolean veltonVerified,
+					  String modListNonce,
+					  String integrityNonce,
+					  String veltonNonce,
+					  String hwid) {
+		this(false, mods, signatureVerified, veltonVerified, modListNonce, integrityNonce, veltonNonce, false, hwid);
 	}
 
 	public ClientInfo withHandshakeChecked(boolean handshakeChecked) {
 		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
-			modListNonce, integrityNonce, veltonNonce, handshakeChecked);
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
 	}
 
 	@Deprecated
@@ -34,12 +45,12 @@ public record ClientInfo(
 
 	public ClientInfo withMods(Set<String> mods) {
 		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
-			modListNonce, integrityNonce, veltonNonce, handshakeChecked);
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
 	}
 
 	public ClientInfo withHasHandshakeClient(boolean hasHandshakeClient) {
 		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
-			modListNonce, integrityNonce, veltonNonce, handshakeChecked);
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
 	}
 
 	@Deprecated
@@ -49,11 +60,16 @@ public record ClientInfo(
 
 	public ClientInfo withSignatureVerified(boolean signatureVerified) {
 		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
-			modListNonce, integrityNonce, veltonNonce, handshakeChecked);
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
 	}
 
 	public ClientInfo withVeltonVerified(boolean veltonVerified) {
 		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
-			modListNonce, integrityNonce, veltonNonce, handshakeChecked);
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
+	}
+
+	public ClientInfo withHwid(String hwid) {
+		return new ClientInfo(hasHandshakeClient, mods, signatureVerified, veltonVerified,
+			modListNonce, integrityNonce, veltonNonce, handshakeChecked, hwid);
 	}
 }

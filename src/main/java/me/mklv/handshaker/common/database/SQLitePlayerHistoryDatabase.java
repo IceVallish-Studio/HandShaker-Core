@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource;
 
 import java.io.File;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
@@ -47,7 +48,8 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
                     uuid TEXT PRIMARY KEY,
                     current_name TEXT NOT NULL,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    hardware_fingerprint TEXT
                 )
                 """);
 
@@ -85,6 +87,11 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
     }
 
     @Override
+    protected void afterInitialize() throws SQLException {
+        migrateSchemaIfNeeded();
+    }
+
+    @Override
     protected String getDatabaseLocation() {
         return dbFile.getAbsolutePath();
     }
@@ -92,12 +99,32 @@ public class SQLitePlayerHistoryDatabase extends PlayerHistoryDatabase {
     @Override
     protected String getUpsertPlayerSql() {
         return """
-            INSERT INTO player_names (uuid, current_name, first_seen, last_seen)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO player_names (uuid, current_name, first_seen, last_seen, hardware_fingerprint)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(uuid) DO UPDATE SET
                 current_name = excluded.current_name,
-                last_seen = excluded.last_seen
+                last_seen = excluded.last_seen,
+                hardware_fingerprint = COALESCE(excluded.hardware_fingerprint, player_names.hardware_fingerprint)
             """;
+    }
+
+    private void migrateSchemaIfNeeded() throws SQLException {
+        try (Connection conn = dataSource.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("PRAGMA table_info(player_names)")) {
+            boolean hasHardwareFingerprint = false;
+            while (rs.next()) {
+                if ("hardware_fingerprint".equals(rs.getString("name"))) {
+                    hasHardwareFingerprint = true;
+                    break;
+                }
+            }
+
+            if (!hasHardwareFingerprint) {
+                logger.info("Migrating SQLite database: adding hardware_fingerprint column to player_names");
+                stmt.execute("ALTER TABLE player_names ADD COLUMN hardware_fingerprint TEXT");
+            }
+        }
     }
 
     @Override

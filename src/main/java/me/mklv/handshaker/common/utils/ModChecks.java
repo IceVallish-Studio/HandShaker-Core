@@ -347,6 +347,20 @@ public final class ModChecks {
                     String message = replaceModList(input.getKickMessage(), nonWhitelisted);
                     return ModCheckResult.violation(message, actionName, nonWhitelisted, false, false, true);
                 }
+
+                // If whitelist is enabled, all mods in whitelisted-mods.txt are implicitly required
+                Set<String> missingWhitelisted = new LinkedHashSet<>();
+                for (String ruleKey : input.getWhitelistedModsActive()) {
+                    if (!matchesRule(ruleKey, input, parsedMods)) {
+                        missingWhitelisted.add(ruleKey);
+                    }
+                }
+
+                if (!missingWhitelisted.isEmpty()) {
+                    String actionName = resolveActionName(input.getModConfigMap(), missingWhitelisted.iterator().next(), "kick");
+                    String message = replaceModList(input.getMissingWhitelistModMessage(), missingWhitelisted);
+                    return ModCheckResult.violation(message, actionName, missingWhitelisted, false, false, true);
+                }
             }
 
             if (input.areModsWhitelistedEnabled()) {

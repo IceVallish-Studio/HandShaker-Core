@@ -65,7 +65,7 @@ public abstract class PlayerHistoryDatabase {
         return enabled && dataSource != null && !dataSource.isClosed();
     }
 
-    public boolean syncPlayerMods(UUID uuid, String playerName, Set<String> currentMods) {
+    public boolean syncPlayerMods(UUID uuid, String playerName, Set<String> currentMods, String hardwareFingerprint) {
         if (!isEnabled()) {
             return false;
         }
@@ -81,6 +81,7 @@ public abstract class PlayerHistoryDatabase {
                     ps.setString(2, playerName);
                     setUtcTimestamp(ps, 3, seenAt);
                     setUtcTimestamp(ps, 4, seenAt);
+                    ps.setString(5, hardwareFingerprint);
                     ps.executeUpdate();
                 }
 

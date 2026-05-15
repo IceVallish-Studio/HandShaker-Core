@@ -85,7 +85,7 @@ public class PayloadValidation {
      * Checks: nonce validity, hash, replay attacks, mod list parsing.
      */
     public ValidationResult validateModList(UUID playerId, String playerName, String modListPayload, 
-                                           String modListHash, String nonce) {
+                                           String modListHash, String nonce, String hwid) {
         if (callbacks.isRateLimitEnabled() && !rateLimiter.tryConsume(playerId)) {
             callbacks.logWarning("Rate limit exceeded for %s while sending mod list payload", playerName);
             return new ValidationResult(false, "Too many handshake payloads. Please retry shortly.");
@@ -182,12 +182,12 @@ public class PayloadValidation {
         }
 
         if (debugMode) {
-            callbacks.logInfo("Received mod list from %s with %s mods, nonce: %s", 
-                playerName, mods.size(), nonce);
+            callbacks.logInfo("Received mod list from %s with %s mods, nonce: %s, hwid: %s", 
+                playerName, mods.size(), nonce, hwid);
         }
 
         // 7. Sync to database
-        callbacks.syncPlayerMods(playerId, playerName, mods);
+        callbacks.syncPlayerMods(playerId, playerName, mods, hwid);
 
         // 8. Update client info
         ClientInfo oldInfo = clients.get(playerId);
@@ -205,7 +205,8 @@ public class PayloadValidation {
             nonce,
             oldInfo != null ? oldInfo.integrityNonce() : null,
             oldInfo != null ? oldInfo.veltonNonce() : null,
-            preserveHandshakeChecked
+            preserveHandshakeChecked,
+            hwid
         );
         clients.put(playerId, newInfo);
 
@@ -221,7 +222,8 @@ public class PayloadValidation {
             newInfo.modListNonce(),
             newInfo.integrityNonce(),
             newInfo.veltonNonce(),
-            true  // Set handshakeChecked=true
+            true,  // Set handshakeChecked=true
+            newInfo.hwid()
         );
         clients.put(playerId, checkedInfo);
 
@@ -412,7 +414,8 @@ public class PayloadValidation {
             oldInfo != null ? oldInfo.modListNonce() : null,
             nonce,
             oldInfo != null ? oldInfo.veltonNonce() : null,
-            oldInfo != null && oldInfo.handshakeChecked()  // preserve handshake-checked flag to prevent double action execution
+            oldInfo != null && oldInfo.handshakeChecked(),  // preserve handshake-checked flag to prevent double action execution
+            oldInfo != null ? oldInfo.hwid() : null
         );
         clients.put(playerId, newInfo);
 
@@ -432,7 +435,8 @@ public class PayloadValidation {
             newInfo.modListNonce(),
             newInfo.integrityNonce(),
             newInfo.veltonNonce(),
-            modListAlreadyProcessed
+            modListAlreadyProcessed,
+            newInfo.hwid()
         );
         clients.put(playerId, checkedInfo);
 
@@ -498,7 +502,8 @@ public class PayloadValidation {
             oldInfo != null ? oldInfo.modListNonce() : null,
             oldInfo != null ? oldInfo.integrityNonce() : null,
             nonce,
-            oldInfo != null && oldInfo.handshakeChecked()  // preserve handshake-checked flag to prevent double action execution
+            oldInfo != null && oldInfo.handshakeChecked(),  // preserve handshake-checked flag to prevent double action execution
+            oldInfo != null ? oldInfo.hwid() : null
         );
         clients.put(playerId, newInfo);
 
@@ -517,7 +522,8 @@ public class PayloadValidation {
             newInfo.modListNonce(),
             newInfo.integrityNonce(),
             newInfo.veltonNonce(),
-            modListAlreadyProcessed
+            modListAlreadyProcessed,
+            newInfo.hwid()
         );
         clients.put(playerId, checkedInfo);
 
@@ -630,7 +636,7 @@ public class PayloadValidation {
         default boolean isPayloadCompressionEnabled() { return true; }
         void logInfo(String format, Object... args);
         void logWarning(String format, Object... args);
-        void syncPlayerMods(UUID playerId, String playerName, Set<String> mods);
+        void syncPlayerMods(UUID playerId, String playerName, Set<String> mods, String hardwareFingerprint);
         void checkPlayer(UUID playerId, String playerName, ClientInfo info);
     }
 }
