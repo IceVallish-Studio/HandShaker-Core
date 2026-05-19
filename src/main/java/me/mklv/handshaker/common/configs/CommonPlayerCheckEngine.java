@@ -75,7 +75,7 @@ public final class CommonPlayerCheckEngine {
             return;
         }
 
-        boolean hasMod = info != null && !info.mods().isEmpty();
+        boolean hasMod = info != null && (info.hasHandshakeClient() || !info.mods().isEmpty());
 
         if (config.getIntegrityMode() == IntegrityMode.SIGNED && hasMod) {
             if (info.integrityNonce() == null && isTimeoutCheck) {
